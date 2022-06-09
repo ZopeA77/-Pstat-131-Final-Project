@@ -1,0 +1,662 @@
+---
+title: "Final Project"
+author: "Abhay Zope"
+date: '2022-04-13'
+output: 
+    html_document:
+      toc: true
+      toc_float: true
+      code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+```{r, include=FALSE}
+library(ggplot2)
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+library(ggthemes)
+library(corrr)
+library(janitor)
+library(Hmisc)
+library(discrim)
+library(pROC)
+library(klaR)
+library(rpart.plot)
+library(randomForest)
+library(ranger)
+tidymodels_prefer()
+library(xgboost)
+library(kknn)
+library(dplyr)
+```
+
+# Introduction
+
+FIFA is a series of soccer video games developed and released annually through the Electronic Arts (EA) company label. While the game is extremely popular across the world, it has also come with its' fair share of controversy. Much of this controversy arises from the fact that each player in the game will be assigned an overall rating from 1-99. As a former avid FIFA player, I have always wondered how developers decide on player ratings. Now, I have begun to ask "Can a machine do it too?" It is entirely possible that the developers at EA use a machine learning model to determine a player's ratings. However, that did not stop me from building my very own. This project is my attempt to create a machine learning model that could predict the overall FIFA rating of any player.
+
+## Why Might this Model be useful?
+
+At first glance, a model developed for a specific video game may not seem to be useful in the real world. However, such a model may have relevance beyond the FIFA series and into the greater sporting world. Determining a player's overall rating can provide insight into the traits and attributes that soccer analysts/professionals value and desire. These same traits and attributes can be further examined in young players, thereby improving a team's ability to find young/new talent.
+
+## Import Data and Libraries
+
+I have utilized a large publicly available Kaggle dataset (<https://www.kaggle.com/datasets/stefanoleone992/fifa-20-complete-player-dataset>) containing player data from FIFA 15 to FIFA 20. The dataset consists of 18,278 rows and 104 columns. Each row contains a unique player (observation) and each column contains unique information about the player such as their name, age, height, weight, nationality, and much more. Here is a brief preview:
+
+```{r}
+#Load in data and clean names
+fifa_data <- read.csv("~/Downloads/archive/players_20.csv", header=TRUE, sep =  ",")
+fifa_data <-fifa_data %>% 
+   clean_names()
+fifa_data %>%
+  head()
+```
+
+It is also of value to import and load any R packages that are relevant towards analyzing data and building a model. The following libraries will be relevant for this project.
+
+```{r}
+#Load packages
+library(tidyverse)
+library(ggplot2)
+library(tidymodels)
+library(corrplot)
+library(ggthemes)
+library(corrr)
+library(janitor)
+library(Hmisc)
+library(discrim)
+library(pROC)
+library(klaR)
+library(rpart.plot)
+tidymodels_prefer()
+library(randomForest)
+library(ranger)
+library(xgboost)
+library(kknn)
+```
+
+# Tidying Data
+
+As one can see, many of the columns in our dataset will simply not be useful with respect to determining a player's rating. For this reason, we will only select columns which have to do with the overall of a player. There are 34 columns in total which impact player rating and these are selected below. Please note that each one of these columns are numeric in nature as they indicate a player's rating in that specific attribute.
+
+```{r}
+#Isolate relevant columns from original dataset
+new_fifa_data = subset(fifa_data, select= c(overall, attacking_crossing, attacking_finishing, attacking_heading_accuracy, attacking_short_passing, attacking_volleys, skill_dribbling, skill_curve, skill_fk_accuracy, skill_long_passing, skill_ball_control, movement_acceleration, movement_sprint_speed, movement_agility, movement_reactions, movement_balance, power_shot_power, power_jumping, power_stamina, power_strength, power_long_shots, mentality_aggression, mentality_interceptions, mentality_positioning, mentality_vision, mentality_penalties,  mentality_composure, defending_marking, defending_standing_tackle, defending_sliding_tackle, goalkeeping_diving, goalkeeping_handling, goalkeeping_kicking, goalkeeping_positioning, goalkeeping_reflexes))
+
+```
+
+After selecting and isolating the appropriate data, we now want to check for any missing data. I have spared you from looking at the very unclean and messy output but the important thing to note here is that we do not have any missing values in our dataset.
+
+```{r, results='hide'}
+#check if any data is missing  
+is.na(new_fifa_data)
+```
+
+Finally, it is also worth considering whether we want to perform any scaling feature transformations on our data. For this reason, it is useful to create a histogram for every numerical column (in this case, every column).
+
+```{r}
+#Create a historgram for every column  
+hist.data.frame(new_fifa_data, breaks=40)
+```
+
+As we can see above, each histogram has a value range of 0 to 100. This indicates that each attribute has the same scale and we consequently do no need to perform any feature scaling transformations. Now, we are ready to continue.
+
+## Data Split
+
+The next step is to split the overall data into training and testing data. Here, 80% of the data was split into training and 20% of the data was split into testing. Stratified sampling was utilized through stratifying on our outcome variable (overall).
+
+Please note that the data split was conducted prior to any exploratory data analysis (EDA). This is because I do not want to risk the possibility of learning about the testing data before testing our model.
+
+```{r}
+set.seed(3435)
+ 
+fifa_split <- initial_split(new_fifa_data, prop = 0.80,
+                                strata = overall)
+fifa_train <- training(fifa_split)
+fifa_test <- testing(fifa_split)
+
+```
+
+Now that the data has been split, we will find that the training data contains 14,611 observations and that the testing data contains 3,657 observations.
+
+# Exploratory Data Analysis
+
+Please note that all of our EDA will be performed on the training data. This means that we will now be working with 14,611 observations rather than the original 18,278.
+
+## Examining Correlation
+
+The first step to take is to examine correlations among the different predictors in the dataset. Given that our dataset has 34 predictors, displaying a correlation matrix in its totality will be visually unpleasant. For this reason, I have created a correlation matrix and identified all predictors with high levels correlation (\>=\|0.8\|). These correlations are what we shall now focus on.
+
+```{r, include= FALSE}
+#Create correlation matrix 
+
+cor_FIFA <- fifa_train %>%
+  correlate()
+rplot(cor_FIFA)
+
+cor_FIFA %>%
+  stretch() %>%
+  ggplot(aes(x, y, fill = r)) +
+  geom_tile() +
+  geom_text(aes(label = as.character(fashion(r))))
+
+#corr <- round(cor(fifa_train), 2)
+#corr
+
+ 
+```
+
+The correlation matrix indicates a strong correlation between the predictors defending_standing_tackle and defending_marking. Let's examine this further:
+
+```{r}
+#Create a scatterplot between defending_standing_tackle and defending_marking.
+ggplot(fifa_train, aes(defending_standing_tackle, defending_marking)) +
+  geom_jitter(alpha = 0.1) +
+  geom_point(colour="red") +
+  geom_smooth(method=lm) +
+  xlab("Defending_Standing_Tackle") + 
+  ylab("Defending_Marking")
+```
+
+The plot above indicates a strong positive correlation between defending_standing_tackle and defending_marking as a rating increase in one of these variables is associated with an increase in the other. While the correlation here may initially raise eyebrows, it is not nearly as surprising when considering the nature of the variables.
+
+Defending_marking can best be described as a player's ability to stay close to an opposing attacker and stop them from getting to a cross or pass from a teammate. Defending_standing tackle measures a player's ability to time a tackle on their feet in order to win the ball and not commit a foul. Both of these attributes are an incredibly important part of defense. Therefore, it is no surprise that a player who is primarily a defender will likely be skilled in both these variables. Conversely, a player who is primarily an attacker will leave a lot to be desired with respect to both these variables.
+
+A similar observation can be made with movement_sprint_speed and movement_acceleration:
+
+```{r}
+#Create a scatterplot between movement_sprint_speed and movement_acceleration.
+ggplot(fifa_train, aes(movement_sprint_speed, movement_acceleration)) +
+  geom_jitter(alpha = 0.1) +
+  geom_point(colour="green") +
+  geom_smooth(method=lm) +
+  xlab("Movement_Sprint_Speed") + 
+  ylab("Movement_Acceleration")
+
+```
+
+The plot above indicates a strong positive correlation between movement_sprint_speed and movement_acceleration as an increase in one of these variables is associated with an increase in the other.
+
+The variable movement_sprint_speed indicates how fast a player is relative to his peers. The variable movement_acceleration indicates how quickly a player can reach his highest velocity relative to his peers. It is no surprise that someone who is fast is also likely to have a high acceleration. Therefore, it makes sense that both of these variables exhibit strong positive correlation.
+
+Both the correlations displayed above can provide insight into the relevancy of the predictors attached to these correlations. Perhaps we do not need all four of these predictors and are better off dropping one from each correlation.
+
+The next correlation worth examining is between the variables of attacking_volleys and mentality_penalties. The relationship between these two variables is as such:
+
+```{r}
+#Create a scatterplot between attacking_volleys and mentality_penalties.
+ggplot(fifa_train, aes(attacking_volleys, mentality_penalties)) +
+  geom_jitter(alpha = 0.1) +
+  geom_point(colour= "yellow") +
+  geom_smooth(method=lm) +
+  xlab("Attacking_Volleys") + 
+  ylab("Mentality_Penalties")
+
+```
+
+Looking at the plot above, we see a familiar story as both attacking_volleys and mentality_penalties share a positive correlation. However, the differentiating factor here is that these two variables are not naturally related to each other. Mentality_penalties can best be described as the confidence a player feels when taking a penalty kick. Attacking_volleys indicates a player's ability to take a shot at goal when the ball is in the air. Neither one of these variables should,in theory, increase together. This correlation is something to consider when we get deeper into model building.
+
+A similar observation can be made with skill_ball_control and attacking_crossing.
+
+```{r}
+#Create a scatterplot between skill_ball_control and attacking_crossing.
+ggplot(fifa_train, aes(skill_ball_control, attacking_crossing)) +
+  geom_jitter(alpha = 0.1) +
+  geom_point(colour= "orange") +
+  geom_smooth(method=lm) +
+  xlab("Skill_Ball_Control") + 
+  ylab("Attacking_Crossing")
+
+```
+
+We again see a strong positive correlation with the two variables listed above. Just like the last example, both skill_ball_control and attacking_crossing are not naturally related. Skill_ball_control can be defined as a player's ability to control the ball when dribbling. Attacking_crossing can be defined as a player's ability to deliver a pass from a wide position to a central area for the purpose of scoring a goal or building an attack. Neither one of these variables are similar in nature but we still see a strong positive correlation. Such a correlation is also something to consider when we get deeper into model building.
+
+It is also worth exploring whether any predictors are correlated to the outcome variable 'overall' itself. The only predictor which has a strong correlation with our outcome variable is movement_reactions. We can illustrate the relationship between both variables below:
+
+```{r}
+#Create a scatterplot between defending_standing_tackle and defending_marking.
+ggplot(fifa_train, aes(movement_reactions, overall)) +
+  geom_jitter(alpha = 0.1) +
+  geom_point(colour="brown") +
+  geom_smooth(method=lm) +
+  xlab("Movement_Reactions") + 
+  ylab("Overall")
+```
+
+Here we see a positive correlation between both movement_reactions and overall.
+
+Not only do we see a positive correlation but our correlation matrix also indicates that we see a strong correlation. As we can see below, the correlation between both these variables is approximately .86.
+
+```{r}
+#Display the correlation between both overall and movement_reactions
+res <- cor.test(fifa_train$overall, fifa_train$movement_reactions, 
+                    method = "pearson")
+res
+```
+
+The strong positive correlation seen above is indicative of the fact that the predictor 'movement_reactions' has a linear relationship with the independent variable 'overall'.
+
+Lastly, it is worth looking at the distribution of our outcome variable.
+
+## Outcome Variable Distribution
+
+```{r}
+#Create histogram for outcome variable
+fifa_train %>% 
+  ggplot(aes(x = overall)) +
+  geom_bar()
+```
+
+Here, we see that the majority of overall ratings fall in between a 60-80 overall, with the great majority specifically in between the 60-70 range. This makes sense as the average FIFA rating is generally believed to be in the low 60s. Overall, the variable seems to be normally distributed which is a good sign as the data do not violate the normality assumption.
+
+# Model Building
+
+Now, it is time to start building models! The first step to complete is to create a recipe predicting the outcome variable, `overall`. For this recipe, we shall utilize all predictors in our dataset `fifa_train`.
+
+```{r}
+fifa_recipe <- recipe(overall ~., fifa_train) %>% 
+step_normalize(all_predictors())
+```
+
+Due to the high number of predictors in the fifa_train dataset, I have been advised (by a TA) to utilize repeated cross-fold validation in the model building process. For this reason, I will use *k*-fold cross-validation, with $k = 10$.
+
+```{r}
+fifa_folds <- vfold_cv(fifa_train, v = 10)
+fifa_folds
+```
+
+## Linear Regression
+
+The first type of model worth considering is one of Linear Regression. In order to examine this further, let us set up a workflow for a linear regression model with the `lm` engine:
+
+```{r}
+fifa_linear_regression <- linear_reg() %>% 
+  set_engine("lm")
+linear_reg_wflow <- workflow() %>% 
+  add_model(fifa_linear_regression) %>% 
+  add_recipe(fifa_recipe)
+```
+
+Now, we will pass the necessary objects to tune_grid(), which will fit the models within each fold.
+
+```{r}
+#Fit models to the folds created previously
+tune_fifa <- tune_grid(
+  object = linear_reg_wflow, 
+  resamples = fifa_folds
+)
+```
+
+In order to evaluate our models, we need to select a performance measure. For this, I will be using the root mean square error (rmse). The rmse is the calculation of the residuals (prediction errors) with respect to the line of best fit. This metric is the preferred performance measure for regression problems and will give an idea as to how much error a model makes in its' predictions.
+
+After fitting the models to the folds, we can select the best-performing model (the one with the lowest rmse) and fit this model to the training data.
+
+```{r}
+best_linear_regression_model <- select_best(tune_fifa, degree, metric = "rmse") #Select best parameter value
+
+final_linear_reg_wkflow <- finalize_workflow(linear_reg_wflow, fifa_train) #Finalize workflow
+
+linear_reg_final_fit <- fit(final_linear_reg_wkflow, data = fifa_train) #Fit model
+```
+
+At last, we can determine the RMSE for the linear regression model.
+
+```{r}
+#Determine the rmse of the model
+augment(linear_reg_final_fit, new_data = fifa_train) %>%
+  rmse(truth = overall, estimate = .pred)
+```
+
+As we can see, Linear Regression model produces an rmse of approximately 2.49. While this score is not bad, it is worth considering and evaluating the performance measure of other models.
+
+## Regression Tree
+
+The next model worth considering is a Regression Tree. This is a powerful model, capable of finding complex nonlinear relationships in the data. To begin this process, let us first create a general decision tree specification and a regression decision tree engine.
+
+```{r}
+#Set specification and engine
+tree_specification <- decision_tree() %>%
+  set_engine("rpart")
+regression_spec <- tree_specification %>%
+  set_mode("regression")
+```
+
+Now we can fit the model.
+
+```{r}
+regression_tree_fit <- fit(regression_spec, 
+                    overall ~ ., data = fifa_train)
+```
+
+Currently, we have the ability to visualize the regression tree model through the code below. However, this model will likely be overfit to the training data, consequently resulting in a failure to accurately make predictions on the testing data.
+
+```{r}
+#Display current tree
+regression_tree_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+In order to prevent overfitting, we will apply a "pruning penalty" to the decision tree in the segment below. We will specifically tune the `cost_complexity` of the decision tree in order to find a more optimal complexity.
+
+```{r}
+regression_tree_wflow <- workflow() %>% #pass through workflow in order to avoid creating an object
+  add_model(regression_spec %>% set_args(cost_complexity = tune())) %>% #specify that we want to tune `cost_complexity'
+  add_formula(overall ~ .)
+
+set.seed(3435)
+new_fifa_fold <- vfold_cv(fifa_train) #Create a K-fold cross validation set
+
+parameter_grid <- grid_regular(cost_complexity(range = c(-4, -1)), levels = 10) #Create a grid of values to try
+
+new_tune_fifa <- tune_grid(
+  regression_tree_wflow, 
+  resamples = new_fifa_fold, 
+  grid = parameter_grid
+)
+```
+
+Now we can create a visualization to compare which values of cost_complexity appear to produce the highest accuracy.
+
+```{r}
+autoplot(new_tune_fifa)
+```
+
+Luckily for us, we can automatically select the best performing value through the code below rather than eyeballing the graph above. We then finalize the workflow and fit the model on the full training data set.
+
+```{r}
+fifa_best_complexity <- select_best(new_tune_fifa, metric = "rmse") #Select best parameter value
+
+regression_tree_final <- finalize_workflow(regression_tree_wflow, fifa_best_complexity) #Finalize workflow
+
+regression_tree_final_fit <- fit(regression_tree_final, data = fifa_train) #Fit model 
+```
+
+We can now visualize the final version of our regression tree model.
+
+```{r}
+regression_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+Now, we can determine the performance on the training data.
+
+```{r}
+#Determine the rmse of the model
+augment(regression_tree_final_fit, new_data = fifa_train) %>%
+  rmse(truth = overall, estimate = .pred)
+```
+
+As we can see, the Regression Tree model produces an rmse of approximately 1.67. This score is significantly better than the Linear Regression rmse and is indicative of the fact that a Regression Tree model is likely superior to a Linear Regression model with respect to making predictions based off of our data.
+
+## Random Forests
+
+Now, it is worth training a Random Forest model. This model is even more powerful than those that were tested before as the Random Forest model is a collection of decision trees whose results are aggregated into one final result. To begin this process, let us first create a random forest tree specification. Then, we can tune min_n and mtry, set mode to "regression", and use the ranger engine.
+
+```{r}
+forest_fifa <- 
+  rand_forest(
+              min_n = tune(),
+              mtry = tune(),
+              #trees = tune(),
+              mode = "regression") %>% 
+  set_engine("ranger")
+
+forest_workflow <- workflow() %>% 
+#Store the model and the recipe into the workflow
+  add_model(forest_fifa) %>% 
+  add_recipe(fifa_recipe)
+```
+
+Next, I set up the tuning grid with 2 levels (this was coordinated with the TA). I selected 10 for the maximum mtry range as it is roughly 1/3rd of the number of predictors in the data set (34).
+
+```{r}
+fifa_params <- parameters(forest_fifa) %>% 
+  update(mtry = mtry(range= c(2, 10)))
+#Define grid
+forest_grid <- grid_regular(fifa_params, levels = 2)
+```
+
+Now it is time to execute the model through tuning and fitting.
+
+```{r}
+forest_tune <- forest_workflow %>% 
+  tune_grid(
+    resamples = fifa_folds, 
+    grid = forest_grid)
+```
+
+Let us now take a look at the rmse through the autoplot() function.
+
+```{r}
+autoplot(forest_tune, metric = 'rmse')
+```
+Here, we can see that the rmse decreases as the number of randomly selected predictors increases. This makes sense as more player data means there is a higher probability of correctly guessing player overall.
+
+We can then select the best-performing model and fit it to the training data.
+
+```{r}
+best_random_forest_model <- select_best(forest_tune, metric = "rmse") #Select best parameter value
+
+final_random_reg_wkflow <- finalize_workflow(forest_workflow, best_random_forest_model) #Finalize workflow
+
+random_forest_final_fit <- fit(final_random_reg_wkflow, data = fifa_train) #Fit model
+
+```
+
+Let's look at the rmse for this model:
+
+```{r}
+#Determine the rmse of the model
+augment(random_forest_final_fit, new_data = fifa_train) %>%
+    rmse(truth = overall, estimate = .pred)
+```
+
+The random forest model has an rmse of approximately .42. This score is significantly better than both the Linear Regression and Regression Tree models and is indicative of the fact that a Random Forest model is currently the most superior model with respect to making predictions based off of our data.
+
+## Boosted Trees
+
+The next model worth examining is a Boosted Trees model. Such a model is also significantly more powerful than the Linear Regression and Regression Tree models that we fit earlier. A Boosted Trees model is very similar to a Random Forests model as a collection of decision trees are utilized in both model types. The main difference, however, lies in how the decision trees are created and aggregated. Unlike random forests, the decision trees in Boosted Trees are not built independently. Instead, the trees are built additively (one after another).
+
+Let us first create a boosted tree specification. Then, we can tune min_n and mtry, set mode to "regression", and use the xgboost engine.
+
+```{r}
+boosted_fifa <- boost_tree(mode = "regression",
+                       min_n = tune(),
+                       mtry = tune(),
+                       ) %>% 
+  set_engine("xgboost")
+
+boosted_workflow <- workflow() %>% 
+  add_model(boosted_fifa) %>% 
+  add_recipe(fifa_recipe)
+```
+
+Next, I once again set up a tuning grid with 2 levels. I also selected 10 for the maximum mtry again.
+
+```{r}
+boosted_parameters <- parameters(boosted_fifa) %>% 
+  update(mtry = mtry(range= c(2, 10)),
+         )
+
+
+# define grid
+boosted_grid <- grid_regular(boosted_parameters, levels = 2)
+```
+
+Now it's time to execute the model through tuning and fitting.
+
+```{r}
+ boosted_tune <- boosted_workflow %>% 
+  tune_grid(
+    resamples = fifa_folds, 
+    grid = boosted_grid
+    )
+```
+
+Once again, we can take a look at the rmse through the autoplot() function.
+
+```{r}
+autoplot(boosted_tune, metric = 'rmse')
+```
+
+
+We can then select the best-performing model and fit it to the training data.
+
+```{r}
+best_boosted_tree_model <- select_best(boosted_tune, metric = "rmse") #Select best parameter
+
+final_boosted_tree_wkflow <- finalize_workflow(boosted_workflow, best_boosted_tree_model) #Finalize workflow
+
+boosted_tree_final_fit <- fit(final_boosted_tree_wkflow, data = fifa_train) #Fit model
+
+```
+
+Let's look at the RMSE for this model:
+
+```{r}
+
+augment(boosted_tree_final_fit, new_data = fifa_train) %>%
+    rmse(truth = overall, estimate = .pred)
+```
+
+The boosted trees model has an rmse of approximately 1.35. While this score is significantly better than the linear regression model and slightly better than the regression tree model, it is significantly worse than the random forest model. So far, our random forest model seems to determine player overall best.
+
+## Nearest Neighbors
+
+The final model worth considering is a K-Nearest Neighbors model. The K-Nearest Neighbors model is nonparametric in nature and significantly more simple than that of random forests or boosted trees. The model uses feature similarity in order to predict a given data point and is often overlooked in the context of predicting for regression.
+
+We start off by creating a nearest neighbor specification and tuning neighbors(). We can also set mode to "regression", and use the kknn engine.
+
+```{r}
+knn_fifa_model <- 
+  nearest_neighbor(
+    neighbors = tune(),
+    mode = "regression") %>% 
+  set_engine("kknn")
+
+knn_workflow <- workflow() %>% 
+  add_model(knn_fifa_model) %>% 
+  add_recipe(fifa_recipe)
+
+```
+
+Once again, we set up a tuning grid with 2 levels.
+
+```{r}
+# set-up tuning grid 
+knn_parameters <- parameters(knn_fifa_model)
+
+
+# define grid
+knn_grid <- grid_regular(knn_parameters, levels = 2)
+```
+
+Thw next step is to execute the model through tuning and fitting.
+
+```{r}
+knn_fifa_tune <- knn_workflow %>% 
+  tune_grid(
+    resamples = fifa_folds, 
+            grid = knn_grid)
+```
+
+As done previously, let us utilize the autoplot() function.
+
+```{r}
+ autoplot(knn_fifa_tune, metric = "rmse")
+```
+
+Then, we select the best-performing model and fit it to the training data.
+
+```{r}
+best_knn_model <- select_best(knn_fifa_tune, metric = "rmse") #Select best parameter
+
+final_knn_wkflow <- finalize_workflow(knn_workflow, best_knn_model) #Finalize workflow
+
+knn_final_fit <- fit(final_knn_wkflow, data = fifa_train) #Fit model
+
+```
+
+We can now determine the rmse.
+
+```{r}
+#Determine the rmse of the model 
+augment(knn_final_fit, new_data = fifa_train) %>%
+    rmse(truth = overall, estimate = .pred)
+```
+
+The k-nearest neighbors model produced an rmse of approximately 1.32. This score is comparable to the boosted trees and regression tree models but lags behind that of the random forest model.
+
+It is clear that the random forest model has the lowest rmse and is therefore the best performing model. For this reason, we will continue with the random forest model.
+
+# Final Model Building
+
+Now that we have identified the model we would like to continue with, it is time to fit it to  the testing data.  
+
+We'll create a new workflow and finalize the workflow by taking the parameters from the best model (the random forest model) using select_best().
+
+```{r}
+  random_forest_workflow_final <- forest_workflow %>% 
+  finalize_workflow(select_best(forest_tune, metric = "rmse"))
+```
+
+Then, we can run the fit.
+
+```{r}
+  random_forest_final_results <- fit(random_forest_workflow_final, fifa_train)
+```
+
+## Analysis of the Test Set
+
+Now, we fit the model to the testing data set and determine the rmse.
+
+```{r}
+#Determine the rmse of the model 
+rmse_value <- augment(random_forest_final_results, new_data = fifa_train) %>%
+   rmse(truth = overall, estimate = .pred)
+rmse_value
+```
+Our model returned an rmse of 0.418 on our testing data, which is nearly the same as the training data. This means the model did not overfit to the training data.
+
+It would be unreasonable to assume that the rmse will always be one particular value. For this reason, we can compute a 95% confidence interval for the metric.
+
+```{r}
+sample.n <- length(fifa_train$overall)
+
+lower_multiplier <- (sample.n/qchisq(p=.025, df=sample.n-1, lower.tail=FALSE))^(1/2)
+upper_multiplier <- (sample.n/qchisq(p=.975, df=sample.n-1, lower.tail=FALSE))^(1/2)
+
+lower_bound <- as.numeric(rmse_value) * lower_multiplier 
+upper_bound <- as.numeric(rmse_value) * upper_multiplier
+
+ x <- .414302
+ y <- .4239094
+ new_rmse_confidence_interval <- c(x,y)
+ new_rmse_confidence_interval
+```
+
+We can see that the RMSE will be between .414 and .424 95% of the time.
+
+It is also of value to see how the model's predictions differed from the actual overalls. Let us selected ten instances from the test set and use the predict() method on the final model.
+
+```{r}
+ sample_data <- fifa_test[sample(nrow(fifa_test), 10), ] #Select instances
+new_accuracy <- predict(random_forest_final_results, new_data = sample_data) #Make predictions 
+ print(new_accuracy)
+ print(sample_data$overall) 
+```
+
+Overall, the predictions seem pretty accurate.
+
+# Conclusion
+
+The goal of this project was to determine whether a machine learning model could accurately predict a FIFA player's overall rating given their attributes and abilities. I tackled this question by testing a number of models and comparing the rmse metric. After deciding on the random forest model, I fit it to the training set, thereby evaluating it on never before seen data. Ultimately, what we have discovered is that a random forest model works well and that machine learning can be used to accurately predict a player's FIFA rating.
+
+Our findings can not only shed light into our understanding of how EA makes overall rating decisions, but it also opens the door for other potential insights. An analysis of the random forest model can provide insight into the traits and attributes that are more relevant with respect to player overall. This can allow an understanding of what separates the best players from the average players, thereby improving the ability to find and develop young talent.
+
+Overall, the FIFA data set provided a unique avenue to interact with a wide variety of data and led to an insightful discovery as to how player overall is generated. 
